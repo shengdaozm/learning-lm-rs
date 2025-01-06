@@ -1,3 +1,7 @@
+use core::panic;
+
+use rand::distributions::Slice;
+
 use crate::tensor::Tensor;
 
 // get (row) vectors from a 2D table given a list of indices
@@ -71,19 +75,46 @@ pub fn masked_softmax(y: &mut Tensor<f32>) {
 }
 
 pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
-    todo!("实现 rms_norm，计算前做一些必要的检查会帮助你后续调试")
+    let shape_y = y.shape();
+    let shape_x = x.shape();
+    
+    assert!(shape_x == shape_y);
+    match shape_x.last() {
+        Some(n) => {
+            assert!(*n == w.size());
+        },
+        None => {
+            panic!("shape_x must have at least one dimension");
+        }
+    }
+
+    let y = unsafe { y.data_mut() };
+    let n = *shape_x.last().unwrap();
+    let len = x.size();
+    let mut start_index :usize=0;
+    loop { // option for every 6 elements
+        if start_index >= len {
+            break;
+        }
+        let slice = x.slice(start_index,start_index+n);
+        let mut tmp_x = Vec::new();
+        tmp_x.extend_from_slice(slice);
+        start_index += n;
+    }
 }
 
 // y = silu(x) * y
 // hint: this is an element-wise operation
 pub fn swiglu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
-    // let len = y.size();
-    // assert!(len == x.size());
+    let len = y.size(); //size is the tensor's length
+    assert!(len == x.size());
 
-    // let _y = unsafe { y.data_mut() };
-    // let _x = x.data();
+    let y = unsafe { y.data_mut() };
+    let x = x.data();
 
-    todo!("实现 silu，这里给了一些前期准备工作的提示，你可以参考")
+    for i in 0..len {
+        y[i] = y[i] * x[i] * (1.0 / ((-x[i]).exp() + 1.0));
+    }    
 }
 
 // C = beta * C + alpha * A @ B^T
