@@ -77,28 +77,32 @@ pub fn masked_softmax(y: &mut Tensor<f32>) {
 pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
     let shape_y = y.shape();
     let shape_x = x.shape();
-    
+
     assert!(shape_x == shape_y);
     match shape_x.last() {
         Some(n) => {
             assert!(*n == w.size());
-        },
+        }
         None => {
             panic!("shape_x must have at least one dimension");
         }
     }
 
     let y = unsafe { y.data_mut() };
-    let n = *shape_x.last().unwrap();
     let len = x.size();
-    let mut start_index :usize=0;
-    loop { // option for every 6 elements
+    let x = x.data();
+    let n = *shape_x.last().unwrap();
+    let mut start_index: usize = 0;
+    loop {
+        // option for every n elements
         if start_index >= len {
             break;
         }
-        let slice = x.slice(start_index,start_index+n);
-        let mut tmp_x = Vec::new();
-        tmp_x.extend_from_slice(slice);
+        let rms: f32 = x.iter().skip(start_index).take(n).map(|&x| x * x).sum();
+        let mu = (rms / (n as f32) + epsilon).sqrt() as f32;
+        for i in start_index..start_index + n {
+            y[i] = x[i] * w.data()[i % n] / mu;
+        }
         start_index += n;
     }
 }
@@ -114,13 +118,28 @@ pub fn swiglu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
 
     for i in 0..len {
         y[i] = y[i] * x[i] * (1.0 / ((-x[i]).exp() + 1.0));
-    }    
+    }
 }
 
 // C = beta * C + alpha * A @ B^T
 // hint: You don't need to do an explicit transpose of B
 pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32) {
-    todo!("实现 matmul_transb，计算前做一些必要的检查会帮助你后续调试");
+    // 如下代码仅仅针对2维矩阵，高维的tensor相乘中，转置和广播都需要实现
+    let shape_c = c.shape();
+    let shape_a = a.shape();
+    let shape_b = b.shape();
+    assert!(shape_b.len() == 2 && shape_a.len() == 2 && shape_c.len() == 2);
+
+    let c = unsafe { c.data_mut() };
+    let beta_c: Vec<f32> = c.iter().map(|&val| val * beta).collect();
+    let a = a.data();
+    let b = b.data();
+    let len = a.len();
+    for i in 0..len {
+        for j in 0..len {
+            c[i * len + j] = beta * c[i * len + j] + alpha * a[i] * b[j];
+        }
+    }
 }
 
 // Dot product of two tensors (treated as vectors)
