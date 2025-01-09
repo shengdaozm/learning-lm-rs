@@ -131,15 +131,65 @@ pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor
     assert!(shape_b.len() == 2 && shape_a.len() == 2 && shape_c.len() == 2);
 
     let c = unsafe { c.data_mut() };
+    let len = c.len();
     let beta_c: Vec<f32> = c.iter().map(|&val| val * beta).collect();
+    let alpha_ab=caculate2mat(a, b, alpha);
+    // a-> m*k , b->n*k ,c ->m*n
+    for i in 0..len {
+        c[i]=beta_c[i] + alpha_ab[i] ;
+    }
+}
+
+// NOTE: 用于计算2维矩阵a*b^T，无法兼容高纬的tensor
+fn caculate2mat(a: &Tensor<f32>, b: &Tensor<f32>,alpha:f32) -> Vec<f32> {
+    let shape_a = a.shape();
+    let shape_b = b.shape();
+    assert!(shape_a.len() == 2 && shape_b.len() == 2);
+
     let a = a.data();
     let b = b.data();
-    let len = a.len();
-    for i in 0..len {
-        for j in 0..len {
-            c[i * len + j] = beta * c[i * len + j] + alpha * a[i] * b[j];
+    let mut mata: Vec<Vec<f32>> = vec![vec![0.0; shape_a[1]]; shape_a[0]];
+    let mut matbb: Vec<Vec<f32>> = vec![vec![0.0; shape_b[1]]; shape_b[0]];
+    let mut matb: Vec<Vec<f32>> = vec![vec![0.0; shape_b[0]]; shape_b[1]];
+    let m=shape_a[0];
+    let n=shape_b[0];
+    assert!(shape_a[1]== shape_b[1]);
+    
+    //生成a
+    let mut index=0;
+    for i in 0..shape_a[0] {
+        for j in 0..shape_a[1] {
+            mata[i][j]=a[index];
+            index += 1;
         }
     }
+    //生成b
+    index = 0;
+    for i in 0..shape_b[0] {
+        for j in 0..shape_b[1] {
+            matbb[i][j]=b[index];
+            index += 1;
+        }
+    }
+    //b 转置
+    for i in 0..shape_b[1] {
+        for j in 0..shape_b[0] {
+            matb[i][j]=matbb[j][i];
+        }
+    }
+    // println!("mata:{:?}",mata);
+    // println!("matb:{:?}",matb);
+    // print!("m:{:?} n:{:?}",m,n);
+    let mut tmp_ans: Vec<Vec<f32>> = vec![vec![0.0; n]; m];
+    for i in 0..m {
+        for j in 0..n {
+            for k in 0..shape_a[1] {
+                // meta m*k ,metab k*n
+                tmp_ans[i][j] += mata[i][k] * matb[k][j]*alpha;
+            }
+        }
+    }
+    tmp_ans.into_iter().flatten().collect()
 }
 
 // Dot product of two tensors (treated as vectors)
