@@ -167,7 +167,31 @@ fn mlp(
     rms_w: &Tensor<f32>,
     eps: f32,
 ) {
-    todo!("Implement mlp");
+    /*
+    act = gate * sigmoid(gate) * up ## SwiGLU
+    output = act @ down_weight.T
+    residual = output + residual
+    */
+    // Step 1: RMS normalization
+    OP::rms_norm(hidden_states, residual, rms_w, eps); //hidden = rms_norm(residual)
+
+    // Step 2: Compute gate and up branches
+    OP::matmul_transb(gate, 0.0, hidden_states, w_gate, 1.0); // gate = hidden_states @ w_gate.T
+    OP::matmul_transb(up, 0.0, hidden_states, w_up, 1.0);     // up = hidden_states @ w_up.T
+
+    // Step 3: SwiGLU activation
+    OP::swiglu(gate, up); // gate = gate * sigmoid(gate) * up
+
+    // Step 4: Compute output
+    let mut output = Tensor::new(vec![0.0; residual.size()], residual.shape());
+    OP::matmul_transb(&mut output, 0.0, gate, w_down, 1.0); // output = gate @ w_down.T
+
+    // Step 5: Residual connection
+    unsafe {
+        for i in 0..residual.size() {
+            residual.data_mut()[i] += output.data()[i]; // residual = residual + output
+        }
+    }
 }
 
 #[test]
