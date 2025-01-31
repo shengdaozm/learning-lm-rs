@@ -45,7 +45,7 @@ impl LLamaParams<f32> {
                 .expect(&format!("Tensor {name} not found in safetensors file"));
             let shape = tensor_data.shape().iter().map(|&x| x as usize).collect::<Vec<_>>();            
             let float_data  = Self::u8_to_f32_vec(tensor_data.data());
-            println!("get the tensor {} successfully", name);
+            //println!("get the tensor {} successfully", name);
             Tensor::new(float_data, &shape)
         };
 
@@ -56,9 +56,9 @@ impl LLamaParams<f32> {
                 .collect()
         };
         // test safetensor here
-        for name in safetensor.names() {
+        /*for name in safetensor.names() {
             println!("Found tensor name: {}", name);
-        }
+        }*/
         // Construct LLamaParams using get_tensor and load_layers
         LLamaParams {
             embedding_table: get_tensor("lm_head.weight"), // 不是很理解

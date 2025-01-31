@@ -101,10 +101,50 @@ impl Llama<f32> {
             let full_k = &mut cache.k_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
             let full_v = &mut cache.v_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
 
-            todo!("self_attention(...)");
-            todo!("down_proj matmul and add residual");
+            //self-attention
+            // Self-Attention
+            self_attention(
+                &mut hidden_states, // (seq, n_kv_h * n_groups * dqkv)
+                &mut att_scores,    // (n_kv_h, n_groups, seq, total_seq)
+                &q,                 // (seq, n_kv_h * n_groups * dqkv)
+                full_k,             // (total_seq, n_kv_h * dqkv)
+                full_v,             // (total_seq, n_kv_h * dqkv)
+                self.n_kv_h,
+                n_groups,
+                seq_len,
+                total_seq_len,
+                self.dqkv,
+            );
+            // down project
+            // Down Projection
+            let mut down_proj = Tensor::<f32>::default(&vec![seq_len, self.d]);
+            OP::matmul_transb(
+            &mut down_proj,
+            0.0,
+            &hidden_states,
+            &self.params.wo[layer],
+        1.0,
+            );
 
-            todo!("mlp(...)");
+            // Add residual
+            unsafe {
+                for i in 0..residual.size() {
+                    residual.data_mut()[i] += down_proj.data()[i];
+                }
+            }
+            //mlp
+            // MLP
+mlp(
+    &mut residual,
+    &mut hidden_states,
+    &mut gate_buf,
+    &mut up_buf,
+    &self.params.w_up[layer],
+    &self.params.w_down[layer],
+    &self.params.w_gate[layer],
+    &self.params.rms_ffn_w[layer],
+    self.eps,
+);
         }
 
         // No matter what seq_len, the output is always a 1D vector of length vocab,
@@ -134,8 +174,30 @@ impl Llama<f32> {
         temperature: f32,
     ) -> Vec<u32> {
         let mut result = Vec::<u32>::new();
+        let mut cache = self.new_cache(); // 初始化 KV Cache
 
-        todo!("实现文本生成");
+        // 将输入的 token_ids 转换为 Tensor
+        let mut input_tensor = Tensor::<u32>::new(token_ids.to_vec(), &vec![token_ids.len()]);
+
+        // 生成循环
+        for _ in 0..max_len {
+            // 前向传播，获取 logits
+            let logits = self.forward(&input_tensor, &mut cache);
+
+            // 从 logits 中采样下一个 token
+            let next_token = OP::random_sample(&logits, top_p, top_k, temperature);
+
+            // 如果生成结束符，停止生成
+            if next_token == self.eos_token_id {
+                break;
+            }
+
+            // 将生成的 token 添加到结果中
+            result.push(next_token);
+
+            // 更新输入，用于下一次生成
+            input_tensor = Tensor::<u32>::new(vec![next_token], &vec![1]);
+        }
 
         result
     }

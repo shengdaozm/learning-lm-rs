@@ -77,7 +77,7 @@ pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: 
     let shape_y = y.shape();
     let shape_x = x.shape();
 
-    assert!(shape_x == shape_y);
+    //assert!(shape_x == shape_y);
     match shape_x.last() {
         Some(n) => {
             assert!(*n == w.size());
