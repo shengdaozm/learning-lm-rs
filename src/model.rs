@@ -153,7 +153,58 @@ fn self_attention(
     total_seq_len: usize,
     dqkv: usize,
 ) {
-    todo!("Implement self_attention");
+    // Step 1: Compute attention scores
+    // att_scores = q @ k^T / sqrt(dqkv)
+    for head in 0..n_kv_h {
+        for group in 0..n_groups {
+            for i in 0..seq_len {
+                for j in 0..total_seq_len {
+                    let mut score = 0.0;
+                    for l in 0..dqkv {
+                        let q_idx = i * n_kv_h * n_groups * dqkv + head * n_groups * dqkv + group * dqkv + l;
+                        let k_idx = j * n_kv_h * dqkv + head * dqkv + l;
+                        score += q.data()[q_idx] * k.data()[k_idx];
+                    }
+                    unsafe {
+                        att_scores.data_mut()[head * n_groups * seq_len * total_seq_len
+                        + group * seq_len * total_seq_len
+                        + i * total_seq_len
+                        + j] = score / (dqkv as f32).sqrt();
+                    }  
+                }
+            }
+        }
+    }
+
+    // Step 2: Apply mask (if necessary)
+    // In this case, the mask is already applied in the `masked_softmax` function.
+
+    // Step 3: Apply softmax to get attention weights
+    OP::masked_softmax(att_scores);
+
+    // Step 4: Weighted sum of values
+    // hidden_states = att_scores @ v
+    for head in 0..n_kv_h {
+        for group in 0..n_groups {
+            for i in 0..seq_len {
+                for l in 0..dqkv {
+                    let mut sum = 0.0;
+                    for j in 0..total_seq_len {
+                        let att_idx = head * n_groups * seq_len * total_seq_len
+                            + group * seq_len * total_seq_len
+                            + i * total_seq_len
+                            + j;
+                        let v_idx = j * n_kv_h * dqkv + head * dqkv + l;
+                        sum += att_scores.data()[att_idx] * v.data()[v_idx];
+                    }
+                    let hidden_idx = i * n_kv_h * n_groups * dqkv + head * n_groups * dqkv + group * dqkv + l;
+                    unsafe{
+                        hidden_states.data_mut()[hidden_idx] = sum;
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn mlp(
