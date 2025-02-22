@@ -1,4 +1,4 @@
-use std::convert;
+//use std::convert;
 
 use crate::config::LlamaConfigJson;
 use crate::tensor::Tensor;
@@ -61,7 +61,12 @@ impl LLamaParams<f32> {
         }*/
         // Construct LLamaParams using get_tensor and load_layers
         LLamaParams {
-            embedding_table: get_tensor("lm_head.weight"), // 不是很理解
+            //embedding_table: get_tensor("lm_head.weight"), // 不是很理解
+            embedding_table: if config.tie_word_embeddings {
+                get_tensor("lm_head.weight")
+            } else {
+                get_tensor("model.embed_tokens.weight")
+            },
             rms_att_w: load_layers("input_layernorm.weight", config.num_hidden_layers),
             wq: load_layers("self_attn.q_proj.weight", config.num_hidden_layers),
             wk: load_layers("self_attn.k_proj.weight", config.num_hidden_layers),

@@ -1,6 +1,6 @@
 use core::panic;
 
-use rand::distributions::Slice;
+//use rand::distributions::Slice;
 
 use crate::tensor::Tensor;
 // get (row) vectors from a 2D table given a list of indices
@@ -73,11 +73,12 @@ pub fn masked_softmax(y: &mut Tensor<f32>) {
     }
 }
 
-pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
+pub fn _rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
+    //println!("[rms_norm]: x.shape()={:?}, y.shape()={:?},w.shape()={:?}",x.shape(), y.shape(),w.shape());
     let shape_y = y.shape();
     let shape_x = x.shape();
 
-    //assert!(shape_x == shape_y);
+    assert!(shape_x == shape_y);
     match shape_x.last() {
         Some(n) => {
             assert!(*n == w.size());
@@ -103,6 +104,52 @@ pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: 
             y[i] = x[i] * w.data()[i % n] / mu;
         }
         start_index += n;
+    }
+}
+
+pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
+    let shape_x = x.shape();
+    let shape_y = y.shape();
+
+    // 检查 x 和 y 的最后一维是否相同
+    let n_x = *shape_x.last().unwrap();
+    let n_y = *shape_y.last().unwrap();
+    assert_eq!(n_x, n_y, "x and y must have the same last dimension");
+
+    // 检查 w 的长度是否与最后一维 n 相同
+    assert_eq!(w.size(), n_x, "w must have the same length as the last dimension of x");
+
+    // 计算 x 和 y 的总元素数
+    let len_x = x.size();
+    let len_y = y.size();
+
+    // 计算 x 和 y 的最后一维之前的维度大小
+    let num_vectors_x = len_x / n_x;
+    let num_vectors_y = len_y / n_y;
+
+    // 检查 x 和 y 的向量数量是否匹配
+    assert_eq!(num_vectors_x, num_vectors_y, "x and y must have the same number of vectors");
+
+    // 获取 y 的可变数据引用
+    let y_data = unsafe { y.data_mut() };
+    let x_data = x.data();
+    let w_data = w.data();
+
+    // 对每个向量进行 RMS 归一化
+    for i in 0..num_vectors_x {
+        let start_index_x = i * n_x;
+        let end_index_x = start_index_x + n_x;
+
+        let start_index_y = i * n_y;
+
+        // 计算 RMS
+        let rms: f32 = x_data[start_index_x..end_index_x].iter().map(|&x| x * x).sum();
+        let mu = (rms / (n_x as f32) + epsilon).sqrt();
+
+        // 计算归一化结果
+        for j in 0..n_x {
+            y_data[start_index_y + j] = x_data[start_index_x + j] * w_data[j] / mu;
+        }
     }
 }
 
@@ -132,15 +179,15 @@ pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor
     let c = unsafe { c.data_mut() };
     let len = c.len();
     let beta_c: Vec<f32> = c.iter().map(|&val| val * beta).collect();
-    let alpha_ab=caculate2mat(a, b, alpha);
+    let alpha_ab = caculate2mat(a, b, alpha);
     // a-> m*k , b->n*k ,c ->m*n
     for i in 0..len {
-        c[i]=beta_c[i] + alpha_ab[i] ;
+        c[i] = beta_c[i] + alpha_ab[i];
     }
 }
 
 // NOTE: 用于计算2维矩阵a*b^T，无法兼容高纬的tensor
-fn caculate2mat(a: &Tensor<f32>, b: &Tensor<f32>,alpha:f32) -> Vec<f32> {
+fn caculate2mat(a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32) -> Vec<f32> {
     let shape_a = a.shape();
     let shape_b = b.shape();
     assert!(shape_a.len() == 2 && shape_b.len() == 2);
@@ -150,15 +197,15 @@ fn caculate2mat(a: &Tensor<f32>, b: &Tensor<f32>,alpha:f32) -> Vec<f32> {
     let mut mata: Vec<Vec<f32>> = vec![vec![0.0; shape_a[1]]; shape_a[0]];
     let mut matbb: Vec<Vec<f32>> = vec![vec![0.0; shape_b[1]]; shape_b[0]];
     let mut matb: Vec<Vec<f32>> = vec![vec![0.0; shape_b[0]]; shape_b[1]];
-    let m=shape_a[0];
-    let n=shape_b[0];
-    assert!(shape_a[1]== shape_b[1]);
-    
+    let m = shape_a[0];
+    let n = shape_b[0];
+    assert!(shape_a[1] == shape_b[1]);
+
     //生成a
-    let mut index=0;
+    let mut index = 0;
     for i in 0..shape_a[0] {
         for j in 0..shape_a[1] {
-            mata[i][j]=a[index];
+            mata[i][j] = a[index];
             index += 1;
         }
     }
@@ -166,14 +213,14 @@ fn caculate2mat(a: &Tensor<f32>, b: &Tensor<f32>,alpha:f32) -> Vec<f32> {
     index = 0;
     for i in 0..shape_b[0] {
         for j in 0..shape_b[1] {
-            matbb[i][j]=b[index];
+            matbb[i][j] = b[index];
             index += 1;
         }
     }
     //b 转置
     for i in 0..shape_b[1] {
         for j in 0..shape_b[0] {
-            matb[i][j]=matbb[j][i];
+            matb[i][j] = matbb[j][i];
         }
     }
     // println!("mata:{:?}",mata);
@@ -184,7 +231,7 @@ fn caculate2mat(a: &Tensor<f32>, b: &Tensor<f32>,alpha:f32) -> Vec<f32> {
         for j in 0..n {
             for k in 0..shape_a[1] {
                 // meta m*k ,metab k*n
-                tmp_ans[i][j] += mata[i][k] * matb[k][j]*alpha;
+                tmp_ans[i][j] += mata[i][k] * matb[k][j] * alpha;
             }
         }
     }
