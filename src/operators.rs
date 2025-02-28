@@ -73,38 +73,23 @@ pub fn masked_softmax(y: &mut Tensor<f32>) {
     }
 }
 
-pub fn _rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
-    //println!("[rms_norm]: x.shape()={:?}, y.shape()={:?},w.shape()={:?}",x.shape(), y.shape(),w.shape());
-    let shape_y = y.shape();
-    let shape_x = x.shape();
-
-    assert!(shape_x == shape_y);
-    match shape_x.last() {
-        Some(n) => {
-            assert!(*n == w.size());
+// shape boardcast
+pub fn broadcast_shapes(shape1: &[usize], shape2: &[usize]) -> Vec<usize> {
+    let len1 = shape1.len();
+    let len2 = shape2.len();
+    let max_len = len1.max(len2);
+    let mut shape = Vec::with_capacity(max_len);
+    // 逐个从后往前匹配维度
+    for i in 0..max_len {
+        let dim1 = if i < len1 { shape1[len1 - 1 - i] } else { 1 };
+        let dim2 = if i < len2 { shape2[len2 - 1 - i] } else { 1 };
+        // 维度要么相等，要么有一个是1，否则不能广播
+        if dim1 != dim2 && dim1 != 1 && dim2 != 1 {
+            panic!("Cannot broadcast shapes {:?} and {:?}", shape1, shape2);
         }
-        None => {
-            panic!("shape_x must have at least one dimension");
-        }
+        shape[max_len - 1 - i] = dim1.max(dim2);
     }
-
-    let y = unsafe { y.data_mut() };
-    let len = x.size();
-    let x = x.data();
-    let n = *shape_x.last().unwrap();
-    let mut start_index: usize = 0;
-    loop {
-        // option for every n elements
-        if start_index >= len {
-            break;
-        }
-        let rms: f32 = x.iter().skip(start_index).take(n).map(|&x| x * x).sum();
-        let mu = (rms / (n as f32) + epsilon).sqrt() as f32;
-        for i in start_index..start_index + n {
-            y[i] = x[i] * w.data()[i % n] / mu;
-        }
-        start_index += n;
-    }
+    shape
 }
 
 pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
@@ -156,9 +141,9 @@ pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: 
 // y = silu(x) * y
 // hint: this is an element-wise operation
 pub fn swiglu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
-    let len = y.size(); //size is the tensor's length
-    assert!(len == x.size());
+    assert!(y.shape() == x.shape(),"swiglu: x and y must have the same shape");
 
+    let len=y.size();
     let y = unsafe { y.data_mut() };
     let x = x.data();
 
@@ -354,4 +339,17 @@ fn test_matmul_transb() {
         &Tensor::<f32>::new(vec![15., 34., 35., 81.], &vec![2, 2]),
         1e-3
     ));
+}
+
+#[test]
+fn test_broadcast_shapes() {
+    assert_eq!(broadcast_shapes(&[3, 4], &[3, 4]), vec![3, 4]);
+    assert_eq!(broadcast_shapes(&[1, 4], &[3, 1]), vec![3, 4]);
+    assert_eq!(broadcast_shapes(&[4], &[2, 3, 1]), vec![2, 3, 4]);
+}
+
+#[test]
+#[should_panic]
+fn test_invalid_broadcast() {
+    broadcast_shapes(&[2, 3], &[3, 2]);
 }

@@ -100,23 +100,23 @@ impl Llama<f32> {
 
             let full_k = &mut cache.k_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
             let full_v = &mut cache.v_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
-            //multi-self-attention
-            self_attention_multihead(
-                &mut hidden_states, 
-                &mut att_scores, 
-                q, 
-                full_k, 
-                full_v, 
-                self.n_kv_h, 
-                n_groups, 
-                seq_len, 
-                total_seq_len, 
-                self.dqkv
+                                                       //multi-self-attention
+            self_attention(
+                &mut hidden_states,
+                &mut att_scores,
+                q,
+                full_k,
+                full_v,
+                self.n_kv_h,
+                n_groups,
+                seq_len,
+                total_seq_len,
+                self.dqkv,
             );
             // down project
             OP::matmul_transb(
                 &mut residual,
-                0.0,
+                1.0,
                 &hidden_states,
                 &self.params.wo[layer],
                 1.0,
@@ -160,9 +160,10 @@ impl Llama<f32> {
         top_p: f32,
         top_k: u32,
         temperature: f32,
+        cache: &mut KVCache<f32>,
     ) -> Vec<u32> {
         let mut result = Vec::<u32>::new();
-        let mut cache = self.new_cache(); // 初始化 KV Cache
+//        let mut cache = self.new_cache();
 
         // 将输入的 token_ids 转换为 Tensor
         let mut input_tensor = Tensor::<u32>::new(token_ids.to_vec(), &vec![token_ids.len()]);
@@ -170,7 +171,7 @@ impl Llama<f32> {
         // 按照最大长度生成结果
         for _ in 0..max_len {
             // 前向传播，获取 logits
-            let logits = self.forward(&input_tensor, &mut cache);
+            let logits = self.forward(&input_tensor, cache);
 
             // 从 logits 中采样下一个 token
             let next_token = OP::random_sample(&logits, top_p, top_k, temperature);
@@ -184,6 +185,7 @@ impl Llama<f32> {
             result.push(next_token);
 
             // 更新输入，用于下一次生成
+            // 前面输入的影响已经保留下来了
             input_tensor = Tensor::<u32>::new(vec![next_token], &vec![1]);
         }
 
@@ -191,80 +193,55 @@ impl Llama<f32> {
     }
 }
 
-//多头
-fn self_attention(
-    hidden_states: &mut crate::tensor::Tensor<f32>,
-    att_scores: &mut crate::tensor::Tensor<f32>,
-    q: &crate::tensor::Tensor<f32>,
-    k: &crate::tensor::Tensor<f32>,
-    v: &crate::tensor::Tensor<f32>,
-    n_kv_h: usize,
-    n_groups: usize,
-    seq_len: usize,
-    total_seq_len: usize,
-    dqkv: usize,
+pub fn self_attention(
+    hidden_states: &mut crate::tensor::Tensor<f32>, //隐藏层，[seq_len,total_head_num*d_head]
+    att_scores: &mut crate::tensor::Tensor<f32>,    //注意力分数
+    q: &crate::tensor::Tensor<f32>,                 //[seq_len,total_head_num*d_head]
+    k: &crate::tensor::Tensor<f32>,                 //[total_seq,num_key_value_heads*d_head]
+    v: &crate::tensor::Tensor<f32>,                 //[total_seq,num_key_value_heads*d_head]
+    n_kv_h: usize,                                  //kv头数,减少计算量
+    n_groups: usize,       //每个 Key 组对应的 Query 头数,减少计算量
+    seq_len: usize,       // 输入序列长度
+    total_seq_len: usize, // 总序列长度
+    dqkv: usize,          // head_dim
 ) {
-
-}
-
-pub fn self_attention_multihead(
-    hidden_states: &mut crate::tensor::Tensor<f32>,
-    att_scores: &mut crate::tensor::Tensor<f32>,
-    q: &crate::tensor::Tensor<f32>,
-    k: &crate::tensor::Tensor<f32>,
-    v: &crate::tensor::Tensor<f32>,
-    n_kv_h: usize,
-    n_groups: usize,
-    seq_len: usize,
-    total_seq_len: usize,
-    dqkv: usize,
-) {
-    // ========== Step 1: 先填 0 ==========
     {
         let att_data = unsafe { att_scores.data_mut() };
         att_data.fill(0.0);
     }
 
-    // ========== Step 2: 计算 Q×K^T => 填进 att_scores ==========
-    // 这里再用 "att_data" 但记得别留到 masked_softmax 之后
     let q_data = q.data();
     let k_data = k.data();
-    let inv_scale = (1.0/ (dqkv as f32).sqrt());
+    let inv_scale = 1.0 / (dqkv as f32).sqrt();
 
-    let num_key_value_heads = n_kv_h;
-    let num_query_heads_per_kv_group = n_groups;
-    let num_attention_heads = n_kv_h * n_groups;
-    let d_head = dqkv;
+    let total_head_num = n_kv_h * n_groups; //总头数
+    let total_d_q = total_head_num * dqkv; //头的总长度
+    let total_d_kv = n_kv_h * dqkv; //每个kv的长度
 
-    let total_d_q = num_attention_heads * d_head;
-    let total_d_kv = num_key_value_heads * d_head;
-
-    let total_d_atts_3 = num_query_heads_per_kv_group * seq_len * total_seq_len;
+    let total_d_atts_3 = n_groups * seq_len * total_seq_len;
     let total_d_atts_2 = seq_len * total_seq_len;
-    let total_d_atts_1 = total_seq_len;
 
     {
-        // 因为还没调用 masked_softmax，这里可以暂时可变借用
         let att_data = unsafe { att_scores.data_mut() };
 
-        for curr_k_head in 0..num_key_value_heads {
-            let offset_k = curr_k_head * d_head;
-            for curr_q_in_group in 0..num_query_heads_per_kv_group {
-                let curr_att_head = curr_k_head*num_query_heads_per_kv_group + curr_q_in_group;
-                let offset_q = curr_att_head*d_head;
+        for index_kv_h in 0..n_kv_h { //头遍历
+            let offset_k = index_kv_h * dqkv;
+            for curr_q_in_group in 0..n_groups {
+                let curr_att_head = index_kv_h * n_groups + curr_q_in_group;
+                let offset_q = curr_att_head * dqkv;
                 for i_seq in 0..seq_len {
-                    let begin_vec_q = i_seq*total_d_q + offset_q;
+                    let begin_vec_q = i_seq * total_d_q + offset_q;
                     for i_tseq in 0..total_seq_len {
-                        let begin_vec_k = i_tseq*total_d_kv + offset_k;
+                        let begin_vec_k = i_tseq * total_d_kv + offset_k;
                         let mut dot = 0.0;
-                        for dd in 0..d_head {
-                            dot = dot+ q_data[begin_vec_q+dd]*k_data[begin_vec_k+dd];
+                        for dd in 0..dqkv {
+                            dot = dot + q_data[begin_vec_q + dd] * k_data[begin_vec_k + dd];
                         }
                         dot = dot * inv_scale;
 
-                        let att_idx = curr_k_head*total_d_atts_3
-                            + curr_q_in_group*total_d_atts_2
-                            + i_seq*total_d_atts_1
+                        let att_idx = index_kv_h * total_d_atts_3
+                            + curr_q_in_group * total_d_atts_2
+                            + i_seq * total_seq_len
                             + i_tseq;
                         att_data[att_idx] = dot;
                     }
@@ -273,37 +250,34 @@ pub fn self_attention_multihead(
         }
     }
 
-    // ========== Step 3: 调 masked_softmax(att_scores) ==========
-    crate::operators::masked_softmax(att_scores);
-    // 这里需要 &mut att_scores
+    OP::masked_softmax(att_scores);
 
-    // ========== Step 4: hidden_states = att_scores × V ==========
-    // 这里重新用 read-only 的 att_data
-    let att_data = att_scores.data(); // <-- 只读
+    let att_data = att_scores.data();
     let v_data = v.data();
     {
         let hs_data = unsafe { hidden_states.data_mut() };
         hs_data.fill(0.0);
 
-        for curr_v_head in 0..num_key_value_heads {
-            let offset_matrix_v_g = curr_v_head*d_head;
-            for curr_q_in_group in 0..num_query_heads_per_kv_group {
-                let offset_matrix_a_h = curr_q_in_group*total_d_atts_2
-                    + curr_v_head*total_d_atts_3;
+        for index_kv_h in 0..n_kv_h {
+            let offset_matrix_v_g = index_kv_h * dqkv;
+            for curr_q_in_group in 0..n_groups {
+                let offset_matrix_a_h =
+                    curr_q_in_group * total_d_atts_2 + index_kv_h * total_d_atts_3;
                 for curr_idx_seq in 0..seq_len {
-                    let begin_vec_a = offset_matrix_a_h + curr_idx_seq*total_d_atts_1;
-                    for curr_idx_dhead in 0..d_head {
+                    let begin_vec_a = offset_matrix_a_h + curr_idx_seq * total_seq_len;
+                    for curr_idx_dhead in 0..dqkv {
                         let begin_vec_v = curr_idx_dhead + offset_matrix_v_g;
                         let mut sum_ = 0.0;
                         for curr_idx_tseq in 0..total_seq_len {
                             let idx_a = begin_vec_a + curr_idx_tseq;
-                            let idx_v = begin_vec_v + curr_idx_tseq*total_d_kv;
+                            let idx_v = begin_vec_v + curr_idx_tseq * total_d_kv;
                             sum_ = sum_ + att_data[idx_a] * v_data[idx_v];
                         }
 
-                        let curr_att_head = curr_v_head*num_query_heads_per_kv_group + curr_q_in_group;
-                        let hs_offset = curr_idx_seq*(num_attention_heads*d_head)
-                            + curr_att_head*d_head
+                        let curr_att_head =
+                            index_kv_h * n_groups + curr_q_in_group;
+                        let hs_offset = curr_idx_seq * (total_head_num * dqkv)
+                            + curr_att_head * dqkv
                             + curr_idx_dhead;
                         hs_data[hs_offset] = sum_;
                     }
@@ -314,7 +288,7 @@ pub fn self_attention_multihead(
 }
 
 fn mlp(
-    residual: &mut Tensor<f32>, //输入残差
+    residual: &mut Tensor<f32>,      //输入残差
     hidden_states: &mut Tensor<f32>, //隐藏层，自注意输出
     gate: &mut Tensor<f32>,
     up: &mut Tensor<f32>,
@@ -447,4 +421,78 @@ pub fn test_load_safetensors() {
         1e-6
     ));
     assert!(float_eq(&model.params.wo[0].data()[100], &0.01965332, 1e-6));
+}
+
+#[test]
+pub fn test_self_attention() {
+    let seq_len = 2;
+    let total_seq_len = 4;
+    let n_kv_h = 2;
+    let n_groups = 1;
+    let dqkv = 3;
+
+    // Initialize simple test tensors for Q, K, and V
+    let q_data = vec![
+        0.1, 0.2, 0.3, // Q for seq_idx 0, head 0
+        0.4, 0.5, 0.6, // Q for seq_idx 1, head 0
+        0.7, 0.8, 0.9, // Q for seq_idx 0, head 1
+        1.0, 1.1, 1.2, // Q for seq_idx 1, head 1
+    ];
+    let q = Tensor::<f32>::new(q_data, &vec![seq_len, n_kv_h * n_groups * dqkv]);
+
+    let k_data = vec![
+        0.1, 0.2, 0.3, // K for total_seq_idx 0, head 0
+        0.4, 0.5, 0.6, // K for total_seq_idx 1, head 0
+        0.7, 0.8, 0.9, // K for total_seq_idx 2, head 0
+        1.0, 1.1, 1.2, // K for total_seq_idx 3, head 0
+        1.3, 1.4, 1.5, // K for total_seq_idx 0, head 1
+        1.6, 1.7, 1.8, // K for total_seq_idx 1, head 1
+        1.9, 2.0, 2.1, // K for total_seq_idx 2, head 1
+        2.2, 2.3, 2.4, // K for total_seq_idx 3, head 1
+    ];
+    let k = Tensor::<f32>::new(k_data, &vec![total_seq_len, n_kv_h * dqkv]);
+
+    let v_data = vec![
+        0.1, 0.2, 0.3, // V for total_seq_idx 0, head 0
+        0.4, 0.5, 0.6, // V for total_seq_idx 1, head 0
+        0.7, 0.8, 0.9, // V for total_seq_idx 2, head 0
+        1.0, 1.1, 1.2, // V for total_seq_idx 3, head 0
+        1.3, 1.4, 1.5, // V for total_seq_idx 0, head 1
+        1.6, 1.7, 1.8, // V for total_seq_idx 1, head 1
+        1.9, 2.0, 2.1, // V for total_seq_idx 2, head 1
+        2.2, 2.3, 2.4, // V for total_seq_idx 3, head 1
+    ];
+    let v = Tensor::<f32>::new(v_data, &vec![total_seq_len, n_kv_h * dqkv]);
+
+    // Initialize attention score tensor and hidden_states
+    let mut att_scores = Tensor::<f32>::default(&vec![n_kv_h, n_groups, seq_len, total_seq_len]);
+    let mut hidden_states = Tensor::<f32>::default(&vec![seq_len, n_kv_h * n_groups * dqkv]);
+
+    // Run self_attention
+    self_attention(
+        &mut hidden_states,
+        &mut att_scores,
+        &q,
+        &k,
+        &v,
+        n_kv_h,
+        n_groups,
+        seq_len,
+        total_seq_len,
+        dqkv,
+    );
+
+    // Check the results (example expected results, calculated manually for f32)
+    let expected_hidden_states = Tensor::<f32>::new(
+        vec![
+            0.7825454, 0.8825454, 0.9825454, // Output for seq_idx 0, head 0
+            1.1990090, 1.2990088, 1.3990089, // Output for seq_idx 0, head 1
+            1.5267198, 1.6267197, 1.7267196, // Output for seq_idx 1, head 0
+            1.9442390, 2.0442388, 2.1442390, // Output for seq_idx 1, head 1
+        ],
+        &vec![seq_len, n_kv_h * n_groups * dqkv],
+    );
+
+    // Use float_eq for comparison of floating-point values
+    assert!(hidden_states.close_to(&expected_hidden_states, 1e-5));
 }
