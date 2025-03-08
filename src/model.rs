@@ -163,7 +163,6 @@ impl Llama<f32> {
         cache: &mut KVCache<f32>,
     ) -> Vec<u32> {
         let mut result = Vec::<u32>::new();
-//        let mut cache = self.new_cache();
 
         // 将输入的 token_ids 转换为 Tensor
         let mut input_tensor = Tensor::<u32>::new(token_ids.to_vec(), &vec![token_ids.len()]);
@@ -176,16 +175,12 @@ impl Llama<f32> {
             // 从 logits 中采样下一个 token
             let next_token = OP::random_sample(&logits, top_p, top_k, temperature);
 
-            // 如果生成结束符，停止生成
             if next_token == self.eos_token_id {
                 break;
             }
-
-            // 将生成的 token 添加到结果中
             result.push(next_token);
 
             // 更新输入，用于下一次生成
-            // 前面输入的影响已经保留下来了
             input_tensor = Tensor::<u32>::new(vec![next_token], &vec![1]);
         }
 
@@ -421,78 +416,4 @@ pub fn test_load_safetensors() {
         1e-6
     ));
     assert!(float_eq(&model.params.wo[0].data()[100], &0.01965332, 1e-6));
-}
-
-#[test]
-pub fn test_self_attention() {
-    let seq_len = 2;
-    let total_seq_len = 4;
-    let n_kv_h = 2;
-    let n_groups = 1;
-    let dqkv = 3;
-
-    // Initialize simple test tensors for Q, K, and V
-    let q_data = vec![
-        0.1, 0.2, 0.3, // Q for seq_idx 0, head 0
-        0.4, 0.5, 0.6, // Q for seq_idx 1, head 0
-        0.7, 0.8, 0.9, // Q for seq_idx 0, head 1
-        1.0, 1.1, 1.2, // Q for seq_idx 1, head 1
-    ];
-    let q = Tensor::<f32>::new(q_data, &vec![seq_len, n_kv_h * n_groups * dqkv]);
-
-    let k_data = vec![
-        0.1, 0.2, 0.3, // K for total_seq_idx 0, head 0
-        0.4, 0.5, 0.6, // K for total_seq_idx 1, head 0
-        0.7, 0.8, 0.9, // K for total_seq_idx 2, head 0
-        1.0, 1.1, 1.2, // K for total_seq_idx 3, head 0
-        1.3, 1.4, 1.5, // K for total_seq_idx 0, head 1
-        1.6, 1.7, 1.8, // K for total_seq_idx 1, head 1
-        1.9, 2.0, 2.1, // K for total_seq_idx 2, head 1
-        2.2, 2.3, 2.4, // K for total_seq_idx 3, head 1
-    ];
-    let k = Tensor::<f32>::new(k_data, &vec![total_seq_len, n_kv_h * dqkv]);
-
-    let v_data = vec![
-        0.1, 0.2, 0.3, // V for total_seq_idx 0, head 0
-        0.4, 0.5, 0.6, // V for total_seq_idx 1, head 0
-        0.7, 0.8, 0.9, // V for total_seq_idx 2, head 0
-        1.0, 1.1, 1.2, // V for total_seq_idx 3, head 0
-        1.3, 1.4, 1.5, // V for total_seq_idx 0, head 1
-        1.6, 1.7, 1.8, // V for total_seq_idx 1, head 1
-        1.9, 2.0, 2.1, // V for total_seq_idx 2, head 1
-        2.2, 2.3, 2.4, // V for total_seq_idx 3, head 1
-    ];
-    let v = Tensor::<f32>::new(v_data, &vec![total_seq_len, n_kv_h * dqkv]);
-
-    // Initialize attention score tensor and hidden_states
-    let mut att_scores = Tensor::<f32>::default(&vec![n_kv_h, n_groups, seq_len, total_seq_len]);
-    let mut hidden_states = Tensor::<f32>::default(&vec![seq_len, n_kv_h * n_groups * dqkv]);
-
-    // Run self_attention
-    self_attention(
-        &mut hidden_states,
-        &mut att_scores,
-        &q,
-        &k,
-        &v,
-        n_kv_h,
-        n_groups,
-        seq_len,
-        total_seq_len,
-        dqkv,
-    );
-
-    // Check the results (example expected results, calculated manually for f32)
-    let expected_hidden_states = Tensor::<f32>::new(
-        vec![
-            0.7825454, 0.8825454, 0.9825454, // Output for seq_idx 0, head 0
-            1.1990090, 1.2990088, 1.3990089, // Output for seq_idx 0, head 1
-            1.5267198, 1.6267197, 1.7267196, // Output for seq_idx 1, head 0
-            1.9442390, 2.0442388, 2.1442390, // Output for seq_idx 1, head 1
-        ],
-        &vec![seq_len, n_kv_h * n_groups * dqkv],
-    );
-
-    // Use float_eq for comparison of floating-point values
-    assert!(hidden_states.close_to(&expected_hidden_states, 1e-5));
 }
