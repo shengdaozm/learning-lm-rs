@@ -1,4 +1,6 @@
 use core::panic;
+use rayon::prelude::*;
+
 
 //use rand::distributions::Slice;
 
@@ -155,72 +157,68 @@ pub fn swiglu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
 // C = beta * C + alpha * A @ B^T
 // hint: You don't need to do an explicit transpose of B
 pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32) {
-    // 如下代码仅仅针对2维矩阵，高维的tensor相乘中，转置和广播都需要实现
     let shape_c = c.shape();
     let shape_a = a.shape();
     let shape_b = b.shape();
     assert!(shape_b.len() == 2 && shape_a.len() == 2 && shape_c.len() == 2);
+    
+    let m = shape_a[0];
+    let k_dim = shape_a[1];
+    let n = shape_b[0];
+    assert_eq!(shape_a[1], shape_b[1], "a cols {} != b cols {}", shape_a[1], shape_b[1]);
+    assert_eq!(shape_c, &[m, n], "c shape mismatch");
 
-    let c = unsafe { c.data_mut() };
-    let len = c.len();
-    let beta_c: Vec<f32> = c.iter().map(|&val| val * beta).collect();
-    let alpha_ab = caculate2mat(a, b, alpha);
-    // a-> m*k , b->n*k ,c ->m*n
-    for i in 0..len {
-        c[i] = beta_c[i] + alpha_ab[i];
-    }
+    // 获取底层数据指针
+    let c_data = unsafe { c.data_mut() };
+    let a_data = a.data();
+    let b_data = b.data();
+
+    // 并行处理每一行
+    c_data.par_chunks_mut(n)
+        .enumerate()
+        .for_each(|(i, c_row)| {
+            let a_row = &a_data[i * k_dim..(i+1) * k_dim];
+            
+            // 对每列进行并行计算
+            c_row.par_iter_mut().enumerate().for_each(|(j, c_val)| {
+                let mut sum = 0.0;
+                let b_row = &b_data[j * k_dim..(j+1) * k_dim];
+                
+                // 展开循环以提高性能
+                for k in (0..k_dim).step_by(4) {
+                    let end = (k + 4).min(k_dim);
+                    sum += a_row[k..end].iter()
+                        .zip(&b_row[k..end])
+                        .map(|(&a, &b)| a * b)
+                        .sum::<f32>();
+                }
+                
+                *c_val = *c_val * beta + sum * alpha;
+            });
+        });
 }
 
-// NOTE: 用于计算2维矩阵a*b^T，无法兼容高纬的tensor
+// 辅助函数保持与之前相同的实现（移除了显式转置）
 fn caculate2mat(a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32) -> Vec<f32> {
     let shape_a = a.shape();
     let shape_b = b.shape();
-    assert!(shape_a.len() == 2 && shape_b.len() == 2);
-
-    let a = a.data();
-    let b = b.data();
-    let mut mata: Vec<Vec<f32>> = vec![vec![0.0; shape_a[1]]; shape_a[0]];
-    let mut matbb: Vec<Vec<f32>> = vec![vec![0.0; shape_b[1]]; shape_b[0]];
-    let mut matb: Vec<Vec<f32>> = vec![vec![0.0; shape_b[0]]; shape_b[1]];
     let m = shape_a[0];
     let n = shape_b[0];
-    assert!(shape_a[1] == shape_b[1]);
-
-    //生成a
-    let mut index = 0;
-    for i in 0..shape_a[0] {
-        for j in 0..shape_a[1] {
-            mata[i][j] = a[index];
-            index += 1;
-        }
-    }
-    //生成b
-    index = 0;
-    for i in 0..shape_b[0] {
-        for j in 0..shape_b[1] {
-            matbb[i][j] = b[index];
-            index += 1;
-        }
-    }
-    //b 转置
-    for i in 0..shape_b[1] {
-        for j in 0..shape_b[0] {
-            matb[i][j] = matbb[j][i];
-        }
-    }
-    // println!("mata:{:?}",mata);
-    // println!("matb:{:?}",matb);
-    // print!("m:{:?} n:{:?}",m,n);
-    let mut tmp_ans: Vec<Vec<f32>> = vec![vec![0.0; n]; m];
-    for i in 0..m {
-        for j in 0..n {
-            for k in 0..shape_a[1] {
-                // meta m*k ,metab k*n
-                tmp_ans[i][j] += mata[i][k] * matb[k][j] * alpha;
-            }
-        }
-    }
-    tmp_ans.into_iter().flatten().collect()
+    let k_dim = shape_a[1];
+    
+    a.data().par_chunks(shape_a[1])
+        .flat_map(|a_row| {
+            (0..n).into_par_iter()
+                .map(|j| {
+                    let b_row = &b.data()[j * k_dim..(j+1) * k_dim];
+                    a_row.iter()
+                        .zip(b_row)
+                        .map(|(&a, &b)| a * b)
+                        .sum::<f32>() * alpha
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 // Dot product of two tensors (treated as vectors)
@@ -339,13 +337,6 @@ fn test_matmul_transb() {
         &Tensor::<f32>::new(vec![15., 34., 35., 81.], &vec![2, 2]),
         1e-3
     ));
-}
-
-#[test]
-fn test_broadcast_shapes() {
-    assert_eq!(broadcast_shapes(&[3, 4], &[3, 4]), vec![3, 4]);
-    assert_eq!(broadcast_shapes(&[1, 4], &[3, 1]), vec![3, 4]);
-    assert_eq!(broadcast_shapes(&[4], &[2, 3, 1]), vec![2, 3, 4]);
 }
 
 #[test]

@@ -6,7 +6,7 @@ mod params;
 mod tensor;
 
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
+// use std::collections::hash_map::Entry;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
@@ -26,8 +26,8 @@ impl ConversationsCache {
 }
 
 fn main() {
-    // story();
-    chat();
+    story();
+    // chat();
 }
 
 fn story() {
@@ -110,7 +110,7 @@ fn chat() {
                     let binding = tokenizer.encode(prompt, true).unwrap();
                     let input_ids = binding.get_ids();
                     
-                    let output_ids = llama.generate(input_ids, 500, 0.8, 30, 1., cache);
+                    let output_ids = llama.generate(input_ids, 200, 0.8, 30, 1., cache);
                     let response = tokenizer.decode(&output_ids, true).unwrap();
                     
                     messages.push(format!("<|im_start|>assistant\n{}<|im_end|>", response));

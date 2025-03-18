@@ -6,8 +6,10 @@ use crate::kvcache::KVCache;
 use crate::operators as OP;
 use crate::params::LLamaParams;
 use crate::tensor::Tensor;
+use rayon::prelude::*;
 use safetensors::SafeTensors;
 use std::path::Path;
+
 pub struct Llama<T> {
     vocab: usize,           // vocab size
     n_layers: usize,        // number of layers
@@ -195,10 +197,10 @@ pub fn self_attention(
     k: &crate::tensor::Tensor<f32>,                 //[total_seq,num_key_value_heads*d_head]
     v: &crate::tensor::Tensor<f32>,                 //[total_seq,num_key_value_heads*d_head]
     n_kv_h: usize,                                  //kv头数,减少计算量
-    n_groups: usize,       //每个 Key 组对应的 Query 头数,减少计算量
-    seq_len: usize,       // 输入序列长度
-    total_seq_len: usize, // 总序列长度
-    dqkv: usize,          // head_dim
+    n_groups: usize,                                //每个 Key 组对应的 Query 头数,减少计算量
+    seq_len: usize,                                 // 输入序列长度
+    total_seq_len: usize,                           // 总序列长度
+    dqkv: usize,                                    // head_dim
 ) {
     {
         let att_data = unsafe { att_scores.data_mut() };
@@ -215,34 +217,51 @@ pub fn self_attention(
 
     let total_d_atts_3 = n_groups * seq_len * total_seq_len;
     let total_d_atts_2 = seq_len * total_seq_len;
-
+    
     {
+        // 使用分块并行写入解决借用冲突
+        //let total_att_elements = n_kv_h * n_groups * seq_len * total_seq_len;
         let att_data = unsafe { att_scores.data_mut() };
-
-        for index_kv_h in 0..n_kv_h { //头遍历
-            let offset_k = index_kv_h * dqkv;
-            for curr_q_in_group in 0..n_groups {
-                let curr_att_head = index_kv_h * n_groups + curr_q_in_group;
-                let offset_q = curr_att_head * dqkv;
-                for i_seq in 0..seq_len {
-                    let begin_vec_q = i_seq * total_d_q + offset_q;
-                    for i_tseq in 0..total_seq_len {
-                        let begin_vec_k = i_tseq * total_d_kv + offset_k;
-                        let mut dot = 0.0;
-                        for dd in 0..dqkv {
-                            dot = dot + q_data[begin_vec_q + dd] * k_data[begin_vec_k + dd];
-                        }
-                        dot = dot * inv_scale;
-
-                        let att_idx = index_kv_h * total_d_atts_3
-                            + curr_q_in_group * total_d_atts_2
-                            + i_seq * total_seq_len
-                            + i_tseq;
-                        att_data[att_idx] = dot;
-                    }
-                }
-            }
-        }
+        
+        // 将注意力矩阵按KV头分块并行处理
+        att_data.par_chunks_mut(total_d_atts_3)
+            .enumerate()
+            .for_each(|(index_kv_h, att_block)| {
+                let offset_k = index_kv_h * dqkv;
+                
+                // 每个KV头内部按组并行
+                att_block.par_chunks_mut(total_d_atts_2)
+                    .enumerate()
+                    .for_each(|(curr_q_in_group, att_group_block)| {
+                        let curr_att_head = index_kv_h * n_groups + curr_q_in_group;
+                        let offset_q = curr_att_head * dqkv;
+    
+                        // 按序列位置并行
+                        att_group_block.par_chunks_mut(total_seq_len)
+                            .enumerate()
+                            .for_each(|(i_seq, att_seq_block)| {
+                                let begin_vec_q = i_seq * total_d_q + offset_q;
+    
+                                // 并行计算每个位置的注意力分数
+                                att_seq_block.par_iter_mut().enumerate().for_each(|(i_tseq, att_val)| {
+                                    let begin_vec_k = i_tseq * total_d_kv + offset_k;
+                                    
+                                    // 向量化点积计算（4路展开）
+                                    let mut dot = 0.0;
+                                    for k in (0..dqkv).step_by(4) {
+                                        let end = (k + 4).min(dqkv);
+                                        dot += q_data[begin_vec_q + k..begin_vec_q + end]
+                                            .iter()
+                                            .zip(&k_data[begin_vec_k + k..begin_vec_k + end])
+                                            .map(|(&q, &k)| q * k)
+                                            .sum::<f32>();
+                                    }
+                                    
+                                    *att_val = dot * inv_scale;
+                                });
+                            });
+                    });
+            });
     }
 
     OP::masked_softmax(att_scores);
